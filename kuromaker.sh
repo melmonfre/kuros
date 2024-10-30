@@ -2,12 +2,11 @@
 set -euo pipefail
 
 if [ "$EUID" -ne 0 ]; then
-    echo "Este script requer permissões de root. Execute-o com sudo."
+    echo "Este script requer permissões de root. Por favor, execute com sudo."
     exit 1
 fi
 
 cat << "EOF"
-
 #########################################################################
 #                  _  __     ____             _  ___ _                  #
 #                 | |/ /    |  _ \  _____   _| |/ (_) |_                #
@@ -17,128 +16,128 @@ cat << "EOF"
 #                                                                       #
 # Criado Por: Melissa Monfre                                            #
 #                                                                       #
-# Versão KurOS 1.9.86-b                                                 #
-#                                                                       #
+# Versão KurOS 1.9.94-z                                                 #
+#                                                 	                #
 #        K-Devkit é um software para desenvolvimento do KurOS           #
 #                                                                       #
 #########################################################################
 EOF
 
 mirror="https://distfiles.gentoo.org/releases/amd64/autobuilds/20241027T164832Z/stage3-amd64-desktop-openrc-20241027T164832Z.tar.xz"
-stage3="$HOME/gentoo"
+stage3="/run/media/mel/GEnto/gentoo"
 user="kuros"
-passwd="kuros"
 iso_date=$(date +%d-%m-%Y)
 iso_name="KurOS-Alpha-$iso_date.iso"
-iso_dir="$HOME/kuroiso"
-checkpoint_file="$HOME/kuroiso/kuros_checkpoint"
-max_retries=5
+iso_dir="/run/media/mel/GEnto/kuroiso"
+checkpoint_file="$iso_dir/kuros_checkpoint"
 cleanup_needed=true
+max_retries=5
 
+# Função para desmontar os pontos de montagem
+function cleanup_mounts {
+    umount -l "$stage3/dev" || true
+    umount -l "$stage3/proc" || true
+    umount -l "$stage3/sys" || true
+    umount -l "$stage3/tmp" || true
+    umount -l "$stage3/run" || true
+}
+
+# Função de limpeza principal
 function cleanup {
-    if [ "$cleanup_needed" = true ] && [ -d "$stage3" ]; then
-        rm -rf "$stage3" || true
+    if [ "$cleanup_needed" = true ]; then
+        read -p "Você deseja limpar o diretório de trabalho? (s/n): " resposta
+        if [[ "$resposta" == "s" ]]; then
+            echo "Limpando diretório temporário..."
+            rm -rf "$stage3" latest-stage3-amd64-desktop-openrc.tar.xz
+        else
+            echo "Manutenção do diretório de trabalho, não será limpo."
+        fi
     fi
+    cleanup_mounts  # Chama a função de desmontagem
 }
 
 trap cleanup EXIT
-
-function check_checkpoint {
-    local step_name="$1"
-    if [[ -f "$checkpoint_file" ]] && grep -q "$step_name" "$checkpoint_file"; then
-        echo "Etapa '$step_name' já concluída. Pulando..."
-        return 0
-    fi
-    return 1
-}
-
-function add_checkpoint {
-    echo "$1" >> "$checkpoint_file"
-}
 
 function retry_command {
     local retries="$max_retries"
     until "$@"; do
         ((retries--))
         if [ "$retries" -le 0 ]; then
-            echo "Falhou após $max_retries tentativas."
-            exit 1
+            echo "Falhou após $max_retries tentativas: $@"
+            return 1
         fi
         sleep 5
     done
 }
 
-mkdir -p "$stage3" "$iso_dir" || exit 1
+mkdir -p "$iso_dir"
+touch "$checkpoint_file"
 
-check_checkpoint "download_stage3" || {
-    retry_command wget "$mirror" -O "$HOME/stage3.tar.xz" || exit 1
-    add_checkpoint "download_stage3"
-}
+retry_command pacman -Sy --needed arch-install-scripts squashfs-tools xorriso dosfstools gptfdisk wget curl || { echo "Falha ao instalar pacotes no Arch"; exit 1; }
 
-check_checkpoint "extract_stage3" || {
-    tar xpvf "$HOME/stage3.tar.xz" -C "$stage3" --xform='s|.*|stage3-amd64|' || exit 1
-    add_checkpoint "extract_stage3"
-}
+mkdir -p "$stage3"
+cd "$stage3" || { echo "Erro ao acessar o diretório $stage3"; exit 1; }
+
+retry_command wget "$mirror" -O stage3-amd64-desktop-openrc.tar.xz
+
+echo "Extraindo o stage 3..."
+tar xpvf stage3-amd64-desktop-openrc.tar.xz || { echo "Erro na extração do stage 3"; exit 1; }
 
 mount --rbind /dev "$stage3/dev"
 mount --make-rslave "$stage3/dev"
 mount -t proc /proc "$stage3/proc"
 mount --rbind /sys "$stage3/sys"
 mount --make-rslave "$stage3/sys"
+mount --rbind /tmp "$stage3/tmp"
 mount --bind /run "$stage3/run"
+
 cp /etc/resolv.conf "$stage3/etc/"
 
-cat << EOF > "$stage3/setup_kuro.sh"
-#!/bin/bash
+chroot "$stage3" /bin/bash <<EOF
+env-update && source /etc/profile
+export PS1="(chroot) \$PS1"
 emerge-webrsync
-echo "America/Sao_Paulo" > /etc/timezone
-emerge --config sys-libs/timezone-data
-eselect profile set 5
-emerge -uDN @world
-useradd -m -G wheel -s /bin/bash "$user"
-echo "$user:$passwd" | chpasswd
-echo "$user ALL=(ALL) ALL" > /etc/sudoers.d/$user
-echo "exec gnome-session" > /home/$user/.xinitrc
-echo "exec gnome-session" > /root/.xinitrc
-sed -i '/^# %wheel ALL=(ALL) ALL/s/^# //' /etc/sudoers
-echo 'CONFIG_TASK_DELAY_ACCT=y' >> /etc/portage/make.conf
-emerge sys-kernel/gentoo-sources
-emerge sys-kernel/genkernel
-genkernel all
-emerge sys-kernel/linux-firmware net-misc/networkmanager www-client/firefox-bin gnome-base/gnome-light x11-apps/xinit
-rc-update add dbus default
-rc-update add xdm default
-rc-update add NetworkManager default
-eselect xorg-server set 1
-emerge x11-drivers/xf86-input-libinput x11-drivers/xf86-video-vesa x11-drivers/xf86-video-amdgpu
+eselect profile set default/linux/amd64/23.0/desktop/gnome	
+emerge sys-kernel/gentoo-sources sys-apps/pciutils sys-apps/usbutils net-misc/networkmanager www-client/firefox-bin
+emerge x11-base/xorg-drivers x11-drivers/xf86-video-vesa x11-drivers/xf86-video-fbdev media-libs/mesa
+emerge gnome-base/gnome-light gnome-base/gdm
+
+# Configurar o login automático para o GDM
+if [ ! -f /etc/gdm/custom.conf ]; then
+    touch /etc/gdm/custom.conf
+fi
+cat <<EOL >> /etc/gdm/custom.conf
+[daemon]
+AutomaticLoginEnable=True
+AutomaticLogin=$user
+EOL
+
+# Adicionar serviços ao OpenRC
 rc-update add gdm default
-gdm
-emerge sys-boot/grub:2
-grub-install
-grub-mkconfig -o /boot/grub/grub.cfg
+rc-update add NetworkManager default
+
+useradd -m -G users,wheel,video,audio -s /bin/bash $user
+passwd -d $user  # Remove a senha do usuário
+passwd -d root   # Remove a senha do usuário root (não recomendado para segurança)
 EOF
 
-chmod +x "$stage3/setup_kuro.sh"
+# Desmontar os pontos de montagem
+cleanup_mounts
 
-chroot "$stage3" /bin/bash -c "/setup_kuro.sh" || { echo "Erro no chroot."; cleanup_needed=false; exit 1; }
+mkdir -p "$iso_dir/livecd"
+cp -R "$stage3"/* "$iso_dir/livecd/"
+mkdir -p "$iso_dir/livecd/boot/grub"
 
-cd "$iso_dir"
-mkdir -p livecd/boot/grub
-
-cat << EOF > livecd/boot/grub/grub.cfg
+cat << "EOF" > "$iso_dir/livecd/boot/grub/grub.cfg"
 set timeout=10
 set default=0
-
 menuentry "KurOS Live" {
-    linux /vmlinuz root=/dev/ram0 init=/linuxrc looptype=squashfs loop=/image.squashfs cdroot quiet
+    linux /vmlinuz
     initrd /initrd.img
+    boot
 }
 EOF
 
-mksquashfs "$stage3" livecd/image.squashfs -e boot
-cp "$stage3/boot/vmlinuz"* livecd/boot/vmlinuz
-cp "$stage3/boot/initramfs"* livecd/boot/initrd.img
-
-xorriso -as mkisofs -o "$iso_dir/$iso_name" -b boot/grub/i386-pc/eltorito.img \
-  -c boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table livecd
-
+retry_command xorriso -as mkisofs -o "$iso_dir/$iso_name" -R -J -V "KurOS" -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table "$iso_dir/livecd"
+echo "ISO gerada em $iso_dir/$iso_name"
+cleanup_needed=false
